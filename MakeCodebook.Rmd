@@ -1,0 +1,148 @@
+
+# Setup
+
+## background 
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did the exercise. 
+
+Participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways - this is the _classe_ variable in our data set. 
+
+More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+
+## Initial download, "raw" data 
+The training data for this project are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+
+## Removing unnecessary predictors from the data
+
+The raw training and test sets contain 159 potential predictors.  Many of the variables contain very little data or have very little variance and will not contribute anything to the model.  And a few (labeled "weird" in the code) seemed inappropriate to include, having to do with timestamps and the mysterious variable, "X."
+
+In this step, 106 variables were removed from consideration: 100 were removed because they were more than 90% empty, 1 variable not already identified have near zero variance, and the remaining 5 were "weird."  Only 53 potential predictors were left. 
+
+
+```{r}
+unique(as.character(FeatureNames$FullNames[1:53]))
+```
+
+## Setting part of training data aside for intermediate evaluation
+
+The raw training data set was huge: it had 19622 rows.  Since we wanted to evaluate several modeling methods and there was plenty of data to spare, we set aside 40% of the data for model evaluation.  This evaluation data set is labeled test_pre, since it is used as a test set for model evaluation, but is NOT the final test set.  The final test set is labeld test_final.
+
+## Exploratory analysis
+
+Feature Plots were used to see any potential relationships between the predictors and classe.  It seemed that the belt-based measurements seemed to seperate the classes a bit  and it was clear that many predictors were correlated with eachother.
+
+
+# Training the data
+
+## Model 1:  Classification tree
+
+The data were first modeled with a single classification tree, using method="rpart".  This model ran quickly, but the accuracy was only 49.92% when evaluated on the test_pre set.  
+
+```r
+#MODEL STATEMENT
+modFit_classTree <- train(classe ~ .,method="rpart",data=training)
+```
+
+```{r}
+predictions_classTree<-predict(modFit_classTree,newdata=testing_pre)
+confusionMatrix(predictions_classTree,testing_pre$classe)
+``` 
+
+It was interesting, however, to see how the data were split at this step.  The first variable to split on was roll_belt which gave a very good prediction of whether the classe was in level "E."  After roll_belt, pitch_forearm was selected, then magnet_dumbbell_y and finally roll_forearm.  
+
+```{r}
+fancyRpartPlot(modFit_classTree$finalModel)
+``` 
+
+
+## Model 2:  Random Forest 
+
+The data were then modeled with a random forest, using method="rf" and all default parameters.  This model took hours to run, but the accuracy was 99.41% when evaluated on the test_pre set.  The accuracy was truly amazing, but the solution didn't seem scalable.  It seems unacceptable to have to wait hours for the result.  
+
+```r
+#MODEL STATEMENT
+modFit_classTree <- train(classe ~ .,method="rf",data=training)
+```
+
+```{r}
+predictions_rf<-predict(modFit_rf,newdata=testing_pre)
+confusionMatrix(predictions_rf,testing_pre$classe)
+``` 
+
+Similary to the first classification tree, it was interesting to see the relative imporantance assigned to each predictor as part of the random forest procedure.  Roll_belt was again given primary importance, and again it was followed by pitch_forearm.  Then yaw_belt, magnet_dumbbell_z, magnet_dumbbell_y, pitch_belt, and roll_forearm.  After this the relative imporance scores drop quickly. 
+
+```{r}
+varImp_rf%>% arrange(desc(Overall))
+``` 
+
+## Model 3:  Random Forest using only variables with "high imporance"
+
+In this step, the data were modeled with a random forest, but only using the most important 7 predictors identified above.  This model took around 5 minutes to run, and the accuracy was 98.04% when evaluated on the test_pre set.  This seemed to be the best tradeoff of accuracy and scalability so it was selected as the final model.
+
+```r
+#MODEL STATEMENT
+modFit_rf_iv <- train(
+    classe ~ roll_belt + pitch_belt + yaw_belt + magnet_dumbbell_y + 
+            magnet_dumbbell_z + roll_forearm + pitch_forearm
+    ,method="rf"
+    ,data=training)
+```
+
+```{r}
+predictions_rf_iv<-predict(modFit_rf_iv,newdata=testing_pre)
+confusionMatrix(predictions_rf_iv,testing_pre$classe)
+``` 
+
+
+
+## Model 4:  Random Forest using top 10 Principal Componants
+
+Although model 3 already seemed like the winner, we cannot ignore the fact that many of the predictors were highly correlated.  The prcomp function showed that the top 10 Principal Componants were sufficient to represent the 96% of the variability in the 53 predictors.  So in this final step, the data were modeled with a random forest, but class was modeled on the first 10 PC vectors. 
+
+Like the original random forest, this model took hours to run.  And the accuracy was 94.89% when evaluated on the test_pre set.  This solution was less accurate and less scalable than the model using the top 7 important predictors!  
+
+```r
+#PREPROCESSING
+preProc <- preProcess(training_numeric,method="pca",pcaComp=10) #same as prcomp function but with scale=T
+training_PCs <- predict(object=preProc,newdata=training_numeric)
+training_PCs$classe<-training$classe
+
+#MODEL STATEMENT
+modFit_rf_PC <- train(classe ~ .,method="rf",data=training_PCs, prox = T)
+```
+
+```{r}
+predictions_rf_PC<-predict(modFit_rf_PC,newdata=testing_pre_PCs)
+confusionMatrix(predictions_rf_PC,testing_pre$classe)
+``` 
+
+# Final Model and Predictions
+
+Model 3 gave the best balance of accuracy and scalability.  The out of sample error rate is estimated to be 1-(accuracy) = 1 - .9804 = 1.96%
+```{r}
+fm_iv
+```
+Model 3 was used to make predictions for  the 20 observations in the final test set.
+
+
+# Discussion 
+
+In traditional experimental design, this would be classified as a split-plot. We have an experiment repeated, over time, within each subject.  If you look at the data, it's very clear that the measurements are very much correlated with the subject.  So initially, I was very nervous about treating the data in the same way that you would if they were independent measurements.  The course didn't cover how to handle repeated measurements, and I couldn't find much about it online.  
+
+To alleviate my nerves, I ran several simple simulations of data like this, and found that it didn't make much of a difference if you treat them as independent - you still get accurate results with a random forest.  And indeed, when the random forest was used on the data we got 99% accuracy!  I would be interested if anyone knows whether this was a fluke or what!  If you know, please contact me!
+
+
+
+
+# References
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+codebook generated by run_analysis.R
+```{r}
+Sys.time()
+```
